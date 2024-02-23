@@ -94,7 +94,7 @@ bregma_lambda_distance_avg = 4.1; % Currently approximation
 
 % (translation values from our bregma estimate: AP/ML from Paxinos, DV from
 % rough MRI estimate)
-bregma_ccf = [570.5,520,44]; % [ML,AP,DV]
+bregma_ccf = [570.5,480,55]; % [ML,AP,DV]
 ccf_translation_tform = eye(4)+[zeros(3,4);-bregma_ccf,0];
 
 % (scaling "Toronto MRI transform", reflect AP/ML, convert 10um to 1mm)
@@ -111,6 +111,54 @@ ccf_rotation_tform = ...
 
 ccf_bregma_tform_matrix = ccf_translation_tform*ccf_scale_tform*ccf_rotation_tform;
 ccf_bregma_tform = affine3d(ccf_bregma_tform_matrix);
+
+
+%% Get mouse skull
+% Find path with CCF
+skull_model_path = fileparts(which('mus.stl'));
+if isempty(skull_model_path)
+    error('Mouse skull model not in MATLAB path (click ''Set path'', add folder with mouse model, available at: http://digimorph.org/specimens/Mus_musculus/)');
+end
+
+fv = stlread([skull_model_path, filesep, 'mus.stl']);
+
+% ~~~ transformation ~~~
+
+    % switch dimensions
+skull_dimSwitch_tform = ...
+    [1,0,0,0;...
+     0,0,-1,0;...
+     0,-1,0,0;...
+     0,0,0,1;];
+
+    % translate to bregma = [0,0,0]
+bregma_skull = [5.8,-13.5,-9.65]; % [ML,AP,DV]
+skull_translation_tform = eye(4)+[zeros(3,4);-bregma_skull,0];
+
+    % rotate to level lambda 
+pitch_rotation = -12.5; % to level bregma & lambda;negative: point noise down
+skull_rotation_tform = ...
+        [1 0 0 0; ...
+        0 cosd(pitch_rotation) -sind(pitch_rotation) 0; ...
+        0 sind(pitch_rotation) cosd(pitch_rotation) 0; ...
+        0 0 0 1];
+
+    % evenly scaled to average skull size
+% bregma_lambda_distance_avg = 4.1; % mm (already defined elsewhere)
+bregma_lambda_distance_skullModel = 3.6; %mm
+scalingfactor = bregma_lambda_distance_avg / bregma_lambda_distance_skullModel;
+skull_scale_tform = ...
+        [scalingfactor 0 0 0; ...
+        0 scalingfactor 0 0; ...
+        0 0 scalingfactor 0; ...
+        0 0 0 1];
+    % ~~ combined matrix ~~ 
+    % Note that Matlab tform matrix is transposed from typical definition. 
+    % Thus the order of transformation goes from left to right when multipled
+    % forward U-> X:  
+skull_tform_matrix = skull_dimSwitch_tform*skull_translation_tform*skull_rotation_tform*skull_scale_tform;%*skull_translation_tform*skull_rotation_tform;
+skull_tform = affine3d(skull_tform_matrix);
+
 
 %% Make GUI axes and objects
 
@@ -195,6 +243,7 @@ uimenu(slice_menu,'Text','Anatomical','MenuSelectedFcn',{@visibility_tv_slice,pr
 uimenu(slice_menu,'Text','Annotated','MenuSelectedFcn',{@visibility_av_slice,probe_atlas_gui})
 object_menu = uimenu(display_menu,'Text','Objects');
 uimenu(object_menu,'Text','Brain outline','MenuSelectedFcn',{@visibility_brain_outline,probe_atlas_gui},'Checked','on');
+uimenu(object_menu,'Text','Skull','MenuSelectedFcn',{@visibility_skull_model,probe_atlas_gui},'Checked','off')
 uimenu(object_menu,'Text','Grid','MenuSelectedFcn',{@visibility_grid,probe_atlas_gui});
 uimenu(object_menu,'Text','Probe','MenuSelectedFcn',{@visibility_probe,probe_atlas_gui},'Checked','on');
 uimenu(object_menu,'Text','3D areas','MenuSelectedFcn',{@visibility_3d_areas,probe_atlas_gui},'Checked','on');
@@ -237,6 +286,9 @@ gui_data.cmap = ccf_cmap; % Atlas colormap
 gui_data.ccf_bregma_tform_ref = ccf_bregma_tform; % Reference CCF-bregma transform
 gui_data.ccf_bregma_tform = ccf_bregma_tform; % CCF-bregma transform to use
 gui_data.structure_plot_idx = []; % Plotted structures
+gui_data.fv = fv;
+gui_data.bregma_lambda_distance_skullModel = bregma_lambda_distance_skullModel;
+gui_data.skull_tform = skull_tform;
 
 % Store handles
 gui_data.handles.structure_patch = []; % Plotted structures
@@ -266,6 +318,9 @@ guidata(probe_atlas_gui, gui_data);
 
 % Draw brain outline
 draw_brain(probe_atlas_gui);
+
+% Draw skull model
+draw_skull(probe_atlas_gui);
 
 % Add a probe, draw slice
 probe_add([],[],probe_atlas_gui);
@@ -918,6 +973,8 @@ guidata(probe_atlas_gui, gui_data);
 % Redraw to new scale:
 % - Brain outline
 draw_brain(probe_atlas_gui);
+% - Skull model
+draw_skull(probe_atlas_gui);
 % - 3D areas
 for redraw_area = gui_data.structure_plot_idx
     draw_areas(probe_atlas_gui,redraw_area)
@@ -1250,6 +1307,7 @@ if ~isempty(plot_structure)
     gui_data.handles.structure_patch(curr_structure_plot_idx) = patch(gui_data.handles.axes_atlas, ...
         'Vertices',structure_3d.vertices, ...
         'Faces',structure_3d.faces, ...
+        'FaceLighting','none',...
         'FaceColor',plot_structure_color,'EdgeColor','none', ...
         'FaceAlpha',structure_alpha,'PickableParts','none');
 
@@ -1391,6 +1449,24 @@ set(alt_menu_options(alt_menu_options ~= h),'Checked','off');
 guidata(probe_atlas_gui, gui_data);
 update_slice(probe_atlas_gui);
 
+end
+
+function visibility_skull_model(h,eventdata,probe_atlas_gui)
+% Get guidata
+gui_data = guidata(probe_atlas_gui);
+
+% Toggle brain outline visibility
+switch h.Checked; case 'on'; new_visibility = 'off'; case 'off'; new_visibility = 'on'; end;
+set(gui_data.handles.skull_model,'Visible',new_visibility);
+
+% Toggle camlight
+
+
+% Set menu item check
+h.Checked = new_visibility;
+
+% Upload gui_data
+guidata(probe_atlas_gui,gui_data);
 end
 
 function visibility_brain_outline(h,eventdata,probe_atlas_gui)
@@ -2404,6 +2480,55 @@ end
 xlim(gui_data.handles.axes_atlas,[min(ml_grid_bregma(:)),max(ml_grid_bregma(:))]);
 ylim(gui_data.handles.axes_atlas,[min(ap_grid_bregma(:)),max(ap_grid_bregma(:))]);
 zlim(gui_data.handles.axes_atlas,[min(dv_grid_bregma(:)),max(dv_grid_bregma(:))]);
+
+% Update gui data
+guidata(probe_atlas_gui, gui_data);
+
+end
+
+
+function draw_skull(probe_atlas_gui)
+
+% Get guidata
+gui_data = guidata(probe_atlas_gui);
+
+skull_patch_data = gui_data.fv;
+skull_vertices = skull_patch_data.Points;
+[skull_vertices(:,1), skull_vertices(:,2), skull_vertices(:,3)] = ...
+    transformPointsForward(gui_data.skull_tform,...
+                skull_patch_data.Points(:,1),...
+                skull_patch_data.Points(:,2),...
+                skull_patch_data.Points(:,3));
+
+
+if ~isfield(gui_data.handles,'skull_model')
+    % If a brain outline doesn't exist yet, draw it
+    skull_model = patch( ...
+        gui_data.handles.axes_atlas, ...
+        'Vertices',skull_vertices, ...
+        'Faces',skull_patch_data.ConnectivityList, ...
+        'FaceColor',[1,1,0.5],'EdgeColor','none','FaceAlpha',0.8, ...
+        'PickableParts','none',... % make unclickable, since probes are inside and clickable
+        'Visible','off');
+    
+    gui_data.handles.skull_model = skull_model;
+else
+    % If a brain outline exists, set new faces/vertices
+    set(gui_data.handles.skull_model, ...
+        'Vertices',skull_patch_data.vertices, ...
+        'Faces',skull_patch_data.faces);
+end
+
+% Set the axes bounds to contain the whole skull
+margin = 0.3;
+xlim(gui_data.handles.axes_atlas,[min(skull_vertices(:,1))-margin,max(skull_vertices(:,1))+margin]);
+ylim(gui_data.handles.axes_atlas,[min(skull_vertices(:,2))-margin,max(skull_vertices(:,2))+margin]);
+zlim(gui_data.handles.axes_atlas,[min(skull_vertices(:,3))-margin,max(skull_vertices(:,3))+margin]);
+
+% add lighting for visualization
+if ~isfield(gui_data,"camlight")
+    gui_data.camlight= camlight(gui_data.handles.axes_atlas,'headlight');
+end
 
 % Update gui data
 guidata(probe_atlas_gui, gui_data);
